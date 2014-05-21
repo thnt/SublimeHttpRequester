@@ -4,6 +4,13 @@ import socket
 import types
 import threading
 import http.client
+import os
+import sys
+
+lib_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'lib')
+if lib_path not in sys.path:
+    sys.path.append(lib_path)
+import https.client
 
 gPrevHttpRequest = ""
 
@@ -127,7 +134,7 @@ class HttpRequester(threading.Thread):
                         conn = http.client.HTTPSConnection(
                             url, port, timeout=timeoutValue, cert_file=clientSSLCertificateFile, key_file=clientSSLKeyFile)
                     else:
-                        conn = http.client.HTTPSConnection(url, port, timeout=timeoutValue)
+                        conn = https.client.HTTPSConnection(url, port, timeout=timeoutValue)
 
                 conn.request(requestType, request_page, requestPOSTBody, headers)
             else:
@@ -308,17 +315,23 @@ class HttpRequester(threading.Thread):
 
     def getParsedResponse(self, resp):
         fileType = self.FILE_TYPE_HTML
+        headerText = ''
         resp_status = "%d " % resp.status + resp.reason + "\n"
-        respText = resp_status
+        headerText = resp_status
 
         for header in resp.getheaders():
-            respText += header[0] + ":" + header[1] + "\n"
+            headerText += header[0] + ":" + header[1] + "\n"
 
             # get resp. file type (html, json and xml supported). fallback to html
-            if header[0] == "content-type":
+            if header[0].lower() == "content-type":
                 fileType = self.getFileTypeFromContentType(header[1])
 
-        respText += "\n\n\n"
+        if fileType == self.FILE_TYPE_JSON:
+            headerText = '/*\n' + headerText + '\n*/'
+        else:
+           headerText = '<!--\n' + headerText + '\n-->'
+
+        respText = headerText + "\n\n\n"
 
         self.contentLenght = int(resp.getheader("content-length", 0))
 
@@ -332,7 +345,14 @@ class HttpRequester(threading.Thread):
             numDownloaded = len(data)
             self.totalBytesDownloaded += numDownloaded
 
-        respText += respBody.decode(self.htmlCharset, "replace")
+        respBody = respBody.decode(self.htmlCharset, "replace")
+
+        # pretty json result
+        if fileType == self.FILE_TYPE_JSON:
+            import json
+            respBody = json.dumps(json.loads(respBody), sort_keys=True, indent=4)
+
+        respText += respBody
 
         return (respText, fileType)
 
@@ -387,7 +407,7 @@ class ResultsPresenter():
             if view is None:
                 view = sublime.active_window().new_file()
                 openedNewView = True
-        
+
         if not(openedNewView):
             view.run_command("http_requester_text_writer", {"text":"\n\n\n"})
 
