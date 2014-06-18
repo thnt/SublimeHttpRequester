@@ -4,12 +4,14 @@ import socket
 import types
 import threading
 import http.client
+import time
 import os
 import sys
 
 lib_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'lib')
 if lib_path not in sys.path:
     sys.path.append(lib_path)
+
 import https.client
 
 gPrevHttpRequest = ""
@@ -78,7 +80,6 @@ class HttpRequester(threading.Thread):
         sublime.set_timeout(lambda: monitorDownloadThread(self), CHECK_DOWNLOAD_THREAD_TIME_MS)
 
     def run(self):
-        DEFAULT_TIMEOUT = 10
         FAKE_CURL_UA = "curl/7.21.0 (i486-pc-linux-gnu) libcurl/7.21.0 OpenSSL/0.9.8o zlib/1.2.3.4 libidn/1.15 libssh2/1.2.6"
 
         selection = self.selection
@@ -131,7 +132,7 @@ class HttpRequester(threading.Thread):
                     if len(clientSSLCertificateFile) > 0 or len(clientSSLKeyFile) > 0:
                         print ("Using client SSL certificate: ", clientSSLCertificateFile)
                         print ("Using client SSL key file: ", clientSSLKeyFile)
-                        conn = http.client.HTTPSConnection(
+                        conn = https.client.HTTPSConnection(
                             url, port, timeout=timeoutValue, cert_file=clientSSLCertificateFile, key_file=clientSSLKeyFile)
                     else:
                         conn = https.client.HTTPSConnection(url, port, timeout=timeoutValue)
@@ -142,8 +143,19 @@ class HttpRequester(threading.Thread):
                 conn = http.client.HTTPConnection(proxyURL, proxyPort, timeout=timeoutValue)
                 conn.request(requestType, httpProtocol + url + request_page, requestPOSTBody, headers)
 
+            startReqTime = time.time()
             resp = conn.getresponse()
-            (respText, fileType) = self.getParsedResponse(resp)
+            endReqTime = time.time()
+
+            startDownloadTime = time.time()
+            (respHeaderText, respBodyText, fileType) = self.getParsedResponse(resp)
+            endDownloadTime = time.time()
+
+            latencyTimeMilisec = int((endReqTime - startReqTime) * 1000)
+            downloadTimeMilisec = int((endDownloadTime - startDownloadTime) * 1000)
+
+            respText = self.getResponseTextForPresentation(fileType, respHeaderText, respBodyText, latencyTimeMilisec, downloadTimeMilisec)
+
             conn.close()
         except (socket.error, http.client.HTTPException, socket.timeout) as e:
             if not(isinstance(e, type(None))):
@@ -315,24 +327,17 @@ class HttpRequester(threading.Thread):
 
     def getParsedResponse(self, resp):
         fileType = self.FILE_TYPE_HTML
-        headerText = ''
         resp_status = "%d " % resp.status + resp.reason + "\n"
-        headerText = resp_status
+        respHeaderText = resp_status
 
         for header in resp.getheaders():
-            headerText += header[0] + ":" + header[1] + "\n"
+            respHeaderText += header[0] + ":" + header[1] + "\n"
 
             # get resp. file type (html, json and xml supported). fallback to html
             if header[0].lower() == "content-type":
                 fileType = self.getFileTypeFromContentType(header[1])
 
-        if fileType == self.FILE_TYPE_JSON:
-            headerText = '/*\n' + headerText + '\n*/'
-        else:
-           headerText = '<!--\n' + headerText + '\n-->'
-
-        respText = headerText + "\n\n\n"
-
+        respBodyText = ""
         self.contentLenght = int(resp.getheader("content-length", 0))
 
         # download a 8KB buffer at a time
@@ -345,16 +350,9 @@ class HttpRequester(threading.Thread):
             numDownloaded = len(data)
             self.totalBytesDownloaded += numDownloaded
 
-        respBody = respBody.decode(self.htmlCharset, "replace")
+        respBodyText += respBody.decode(self.htmlCharset, "replace")
 
-        # pretty json result
-        if fileType == self.FILE_TYPE_JSON:
-            import json
-            respBody = json.dumps(json.loads(respBody), sort_keys=True, indent=4)
-
-        respText += respBody
-
-        return (respText, fileType)
+        return (respHeaderText, respBodyText, fileType)
 
     def getFileTypeFromContentType(self, contentType):
         fileType = self.FILE_TYPE_HTML
@@ -367,6 +365,16 @@ class HttpRequester(threading.Thread):
                 fileType = cType
 
         return fileType
+
+    def getResponseTextForPresentation(self, fileType, respHeaderText, respBodyText, latencyTimeMilisec, downloadTimeMilisec):
+        respHeaderText = respHeaderText + "\n" + "Latency: " + str(latencyTimeMilisec) + "ms" + "\n" + "Download time:" + str(downloadTimeMilisec) + "ms"
+        if fileType == self.FILE_TYPE_JSON:
+            respHeaderText = '/*\n' + respHeaderText + '\n*/'
+            import json
+            respBodyText = json.dumps(json.loads(respBodyText), sort_keys=True, indent=4)
+        else:
+            respHeaderText = '<!--\n' + respHeaderText + '\n-->'
+        return respHeaderText + "\n\n\n" + respBodyText
 
     def getCurrentMessage(self):
         return "HttpRequester downloading " + str(self.totalBytesDownloaded) + " / " + str(self.contentLenght)
